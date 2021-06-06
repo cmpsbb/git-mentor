@@ -250,3 +250,100 @@ create or replace trigger trig_mentor_payment_before before insert or update on 
     end if;
   end;
 /
+
+-- Представления данных --
+-- Сервисы
+create or replace view v_service as
+  select   service_id,
+           name,
+           description,
+           required_pay_count
+  from     dict_service
+  where    deleted is null;
+/
+
+-- Ученики
+create or replace view v_student as
+  select ds.student_id,
+         ds.last_name,
+         ds.first_name,
+         ds.second_name,
+         ds.service_id,
+         svc.name service_name
+  from   dict_student ds
+  left join dict_service svc on svc.service_id = ds.service_id
+  where  ds.deleted is null;
+/
+
+-- Дисциплины
+create or replace view v_discipline as
+  select discipline_id,
+         name
+  from   dict_discipline
+  where  deleted is null;
+/
+
+-- Курсы
+create or replace view v_course as
+  select dc.course_id,
+         dc.name,
+         dc.discipline_id,
+         dd.name discipline_name,
+         dc.cost_value,
+         dc.duration,
+           floor(dc.duration/60)||'ч. '||
+           mod(dc.duration, 60)||'м.'
+           duration_text
+  from   dict_course dc
+  left join dict_discipline dd on dd.discipline_id = dc.discipline_id
+  where  dc.deleted is null;
+  
+-- Расписание занятий
+create or replace view v_schedule as
+  select ms.mentor_schedule_id,
+         ms.course_id,
+         dc.name course_name,
+         ms.student_id,
+         ds.service_id,
+           ds.last_name||' '||
+           ds.first_name||
+           case when ds.second_name is not null then ' '||ds.second_name else null end student_fio,
+         ms.begin_date,
+         ms.end_date,
+         ms.state
+  from mentor_schedule ms
+  left join dict_course dc on dc.course_id = ms.course_id
+  left join dict_student ds on ds.student_id = ms.student_id
+  where ms.deleted is null;
+/
+  
+-- Платежи
+create or replace view v_payment as
+  select mp.mentor_payment_id,
+         mp.mentor_schedule_id,
+         trunc(ms.begin_date, 'dd') course_date,
+         ms.student_id,
+         ms.course_id,
+         mp.pay_value,
+         mp.service_value,
+         mp.tax_value,
+         mp.income_value,
+         mp.processed,
+         mp.processed_on
+  from mentor_payment mp
+  left join mentor_schedule ms on ms.mentor_schedule_id = mp.mentor_schedule_id;
+/
+
+-- Еженедельный отчет по платежам
+create or replace view v_payment_report as
+  select   to_char(course_date - 7/24,'iyyy') year,
+           to_char(course_date - 7/24,'iw') week,
+           round(sum(pay_value), 2) pay_value,
+           round(sum(service_value), 2) service_value,
+           round(sum(tax_value), 2) tax_value,
+           round(sum(income_value), 2) income_value
+  from     v_payment
+  group by to_char(course_date - 7/24,'iyyy'),
+           to_char(course_date - 7/24,'iw')
+  order by 1, 2;
+/
