@@ -354,4 +354,141 @@ procedure update_mentor_schedule(
     exception when others then raise_application_error(-20001, sqlerrm);
   end;
 
+procedure init_mentor_schedule(
+  p_begin_date        in date,
+  p_day_count         in number)
+  is
+  p_minute       number:=1/1440;
+  p_reserve      number:=5/1440; -- "окно" в 5 минут
+  p_cur_dt       date;
+  p_incr_dt      date;
+  p_max_course   number(1):=2;
+  -- ограничение на максимальное количество занятий в неделю
+  function get_course_count(
+    p_course_id  in number,
+    p_student_id in number) return number
+  is
+  result number;
+  begin
+    select count(*)
+    into   result
+    from   v_schedule
+    where  course_id = p_course_id
+       and student_id = p_student_id
+       and trunc(begin_date, 'dd') >= p_begin_date;
+    return result;
+  end;
+  -- 
+  begin
+    -- по всему диапазону дней (на каждого ученика по каждому курсу не более одного занятия в день)
+    for date_i in (select (to_date(to_char(p_begin_date, 'dd.mm.yyyy')||' 08:30', 'dd.mm.yyyy hh24:mi')) + rownum - 1 begin_dt,
+                          (to_date(to_char(p_begin_date, 'dd.mm.yyyy')||' 17:30', 'dd.mm.yyyy hh24:mi')) + rownum - 1 end_dt
+                   from dual
+                   connect by level <= p_day_count
+                   order by 1)
+    loop
+      p_cur_dt:=date_i.begin_dt;
+      -- привязки
+      for pty_i in (select    scp.student_id, scp.course_id, vc.duration
+                    from      student_course_pty scp
+                    left join v_student vs on vs.student_id = scp.student_id
+                    left join v_course vc on vc.course_id = scp.course_id
+                    order by  1, 2)
+      loop
+        -- дата и время окончания занятия
+        p_incr_dt:=p_cur_dt + (p_minute * pty_i.duration);
+        if  p_incr_dt <= date_i.end_dt 
+         then
+          begin
+            if get_course_count(pty_i.course_id, pty_i.student_id) < p_max_course then
+              mentor_pack.insert_mentor_schedule(
+                p_course_id         => pty_i.course_id,
+                p_student_id        => pty_i.student_id,
+                p_begin_date        => p_cur_dt,
+                p_end_date          => p_incr_dt);
+              p_cur_dt:=p_incr_dt + p_reserve;
+            end if;
+          end;
+         else exit; -- переход к следующему дню
+        end if;
+      end loop;
+    end loop;
+  end;
+  
+procedure approve_mentor_schedule_row(
+  p_mentor_schedule_id in number)
+  is
+  p_pay_value          number;
+  p_service_value      number;
+  p_tax_value          number;
+  p_income_value       number;
+  p_required_pay_count number;
+  p_cur_pay_count      number;
+  begin
+    -- расчет значений атрибутов платежа
+    select vc.cost_value,
+           vsc.required_pay_count,
+           (select count(*) from v_payment where student_id = vs.student_id) cur_pay_count
+    into   p_pay_value,
+           p_required_pay_count,
+           p_cur_pay_count
+    from   v_schedule vs
+    left join v_course vc on vc.course_id = vs.course_id
+    left join v_service vsc on vsc.service_id = vs.service_id
+    where  vs.mentor_schedule_id = p_mentor_schedule_id;
+    if p_cur_pay_count < p_required_pay_count then
+      begin
+        p_service_value:=p_pay_value;
+        p_tax_value:=0;
+        p_income_value:=0;
+      end;
+     else
+      begin
+        p_service_value:=0;
+        p_tax_value:=p_pay_value * 0.04;
+        p_income_value:=p_pay_value - p_tax_value;
+      end;
+    end if;
+    -- добавление платежа
+    insert into mentor_payment (
+      mentor_schedule_id,
+      pay_value,
+      service_value,
+      tax_value,
+      income_value)
+    values (
+      p_mentor_schedule_id,
+      p_pay_value,
+      p_service_value,
+      p_tax_value,
+      p_income_value);
+    -- фиксация статуса занятия
+    update mentor_schedule
+    set    state = 1
+    where  mentor_schedule_id = p_mentor_schedule_id;
+    exception when others then
+    begin
+      rollback;
+      raise_application_error(-20001, sqlerrm);
+    end;
+  end;
+  
+procedure approve_mentor_schedule is
+  begin
+    for i in (select   mentor_schedule_id
+              from     v_schedule
+              where    state is null
+              order by begin_date)
+    loop
+      mentor_pack.approve_mentor_schedule_row(i.mentor_schedule_id);
+    end loop;
+    -- фиксация транзакции
+    commit;
+    exception when others then
+    begin
+      rollback;
+      raise_application_error(-20001, sqlerrm);
+    end;
+  end;
+
 end;

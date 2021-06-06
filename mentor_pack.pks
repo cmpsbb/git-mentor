@@ -95,5 +95,17 @@ procedure update_mentor_schedule(
 -- удаление записи расписания
 procedure update_mentor_schedule(
   p_mentor_schedule_id in number);
+
+-- планировщик занятий
+procedure init_mentor_schedule(
+  p_begin_date         in date,
+  p_day_count          in number);
+
+-- утверждение занятия расписания
+procedure approve_mentor_schedule_row(
+  p_mentor_schedule_id in number);
+
+-- групповое утверждение занятий расписания
+procedure approve_mentor_schedule;
   
 end;
